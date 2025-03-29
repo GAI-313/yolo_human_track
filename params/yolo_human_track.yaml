@@ -1,0 +1,14 @@
+/**:
+  ros__parameters:
+    # YOLO姿勢推定ノード用パラメータ
+    detect_conf: 0.5       # 人物検出の信頼度閾値 (0-1)
+    detect_iou: 0.5        # NMSのIOU閾値 (0-1)
+    yolo_model: "yolov8n-pose.pt"  # 使用するYOLOモデルファイル
+    track_thresh: 0.5      # ByteTrackの高信頼度検出閾値
+    match_thresh: 0.8      # ByteTrackのマッチングIOU閾値
+    track_buffer: 30       # ByteTrackのトラック保持フレーム数
+
+    # 3D可視化ノード用パラメータ
+    depth_scale: 0.001     # 深度値のスケール係数 (mm→m変換)
+    marker_lifetime: 0.05  # マーカーの表示時間(秒)
+    depth_sample_size: 5   # 深度サンプリング領域のサイズ (奇数推奨)
