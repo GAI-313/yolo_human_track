@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""
-YOLOv8とByteTrackを使用した人物姿勢推定ROS2ノード
-主な機能:
-- RGB画像から人物検出と姿勢推定(YOLOv8-pose)
-- ByteTrackによる人物追跡
-- 骨格情報の可視化とROSトピックへのパブリッシュ
-"""
-
-import rclpy
-from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
+from rclpy.node import Node
+import rclpy
+
 from human_pose_msgs.msg import Pose2DArray, Pose2D, RoiPose, RoiPoseArray
+from sensor_msgs.msg import Image
+from std_srvs.srv import SetBool
+
 from ultralytics import YOLO
+
+from cv_bridge import CvBridge
 import numpy as np
 import cv2
+
 from collections import deque
 import traceback
-from typing import Dict, List, Optional, Tuple
+
 
 # ==============================================
 # 骨格接続情報 (COCOキーポイントフォーマットに準拠)
@@ -227,6 +224,7 @@ class PoseEstimate(Node):
         # ==============================================
         # パラメータ設定と読み込み
         # ==============================================
+        self.declare_parameter('auto_bringup', False)   # プログラム実行時に自動的に物体検出をスタート
         self.declare_parameter('detect_conf', 0.5)      # 人物検出の信頼度閾値
         self.declare_parameter('detect_iou', 0.5)       # NMSのIOU閾値
         self.declare_parameter('yolo_model', 'yolov8n-pose.pt')  # モデルファイル
@@ -235,6 +233,7 @@ class PoseEstimate(Node):
         self.declare_parameter('track_buffer', 30)      # トラック保持フレーム数
 
         # パラメータ値を読み込み
+        self.execute = self.get_parameter('auto_bringup').get_parameter_value().bool_array_value
         self.detect_conf = self.get_parameter('detect_conf').get_parameter_value().double_value
         self.detect_iou = self.get_parameter('detect_iou').get_parameter_value().double_value
         self.yolo_model = self.get_parameter('yolo_model').get_parameter_value().string_value
@@ -245,7 +244,7 @@ class PoseEstimate(Node):
         # ==============================================
         # モデルとトラッカーの初期化
         # ==============================================
-        self.model = YOLO(self.yolo_model)  # YOLOv8-poseモデル
+        if self.execute: self.model = self.bringup_model()  # YOLOv8-poseモデル
         self.tracker = BYTETracker(
             track_thresh=track_thresh,
             match_thresh=match_thresh,
@@ -263,7 +262,7 @@ class PoseEstimate(Node):
         )
         
         # ==============================================
-        # パブリッシャー/サブスクライバーの設定
+        # パブリッシャー/サブスクライバー/サービスの設定
         # ==============================================
         self.pose_pub = self.create_publisher(
             Pose2DArray,
@@ -277,33 +276,63 @@ class PoseEstimate(Node):
             self.rgb_callback,
             qos_profile=qos_profile
         )
+        self.srv = self.create_service(
+            SetBool,
+            'yolo_human_track/execute',
+            self._cb_execute_manager
+        )
         
         self.get_logger().info("PoseEstimate node initialized (ByteTrack with skeleton visualization)")
+    
+    def bringup_model(self):
+        self.get_logger().info("""
+LOAD MODEL : %s
+MINIMUM_CONF : %d                               
+        """%(self.yolo_model, self.detect_conf))
+
+        return YOLO(self.yolo_model) 
+    
+
+    def _cb_execute_manager(self, req: SetBool.Request, res: SetBool.Response):
+        if req.data:
+            self.model = self.bringup_model()
+            self.execute = True
+            res.message = "Load %s"%self.yolo_model
+        
+        else:
+            self.execute = False
+            del self.model
+            res.message = 'Stop detection'
+        
+        res.success = True
+        return res
+
 
     def rgb_callback(self, msg):
         """
         RGB画像コールバック関数
 
         """
-        try:
-            # ROS→OpenCV画像変換
-            cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-            
-            # YOLOv8で推論 (信頼度閾値とNMS閾値を適用)
-            results = self.model(cv_image, verbose=False, conf=self.detect_conf, iou=self.detect_iou)
-            
-            # 検出結果をフォーマット
-            detections = self._create_detections(results)
-            
-            # ByteTrackで追跡
-            tracks = self.tracker.update(detections, cv_image)
-            
-            # 結果をパブリッシュ
-            self._publish_results(tracks, msg)
-            
-        except Exception as e:
-            self.get_logger().error(f'Error processing image: {str(e)}')
-            traceback.print_exc()
+        if self.execute:
+            try:
+                # ROS→OpenCV画像変換
+                cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+                
+                # YOLOv8で推論 (信頼度閾値とNMS閾値を適用)
+                results = self.model(cv_image, verbose=False, conf=self.detect_conf, iou=self.detect_iou)
+                
+                # 検出結果をフォーマット
+                detections = self._create_detections(results)
+                
+                # ByteTrackで追跡
+                tracks = self.tracker.update(detections, cv_image)
+                
+                # 結果をパブリッシュ
+                self._publish_results(tracks, msg)
+                
+            except Exception as e:
+                self.get_logger().error(f'Error processing image: {str(e)}')
+                traceback.print_exc()
 
     def _create_detections(self, results):
         """

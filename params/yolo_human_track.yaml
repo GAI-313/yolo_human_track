@@ -1,5 +1,6 @@
 /**:
   ros__parameters:
+    auto_bringup: False    #起動時すぐに検出を開始する
     # YOLO姿勢推定ノード用パラメータ
     detect_conf: 0.5       # 人物検出の信頼度閾値 (0-1)
     detect_iou: 0.5        # NMSのIOU閾値 (0-1)
