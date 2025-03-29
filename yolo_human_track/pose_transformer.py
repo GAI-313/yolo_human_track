@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy
+from rclpy.node import Node
+import rclpy
+
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from human_pose_msgs.msg import Pose2DArray
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Vector3, Pose, PoseArray, Quaternion
-from std_msgs.msg import ColorRGBA, Header
+from std_msgs.msg import ColorRGBA
+
 from cv_bridge import CvBridge
 import numpy as np
 import random
+
 import tf_transformations
-from typing import Dict, List
+
 import traceback
+
 
 class Pose3DVisualizer(Node):
     KEYPOINT_CONNECTIONS = [
