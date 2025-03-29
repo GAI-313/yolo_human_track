@@ -30,6 +30,7 @@ sudo apt install ros-humble-cv-bridge ros-humble-vision-msgs
 1. ROS2ワークスペースに本パッケージをクローン
 ```bash
 cd ~/ros2_ws/src
+git clone https://github.com/GAI-313/human_pose_msg.git
 git clone https://github.com/your_repository/yolo_human_track.git
 ```
 
@@ -37,7 +38,7 @@ git clone https://github.com/your_repository/yolo_human_track.git
 ```bash
 cd ~/ros2_ws
 rosdep install -i --from-path src --rosdistro humble -y
-colcon build --packages-select yolo_human_track
+colcon build --symlink-install --packages-up-to yolo_human_track
 source install/setup.bash
 ```
 
