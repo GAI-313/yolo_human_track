@@ -6,12 +6,14 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from human_pose_msgs.msg import Pose2DArray
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, Vector3
-from std_msgs.msg import ColorRGBA
+from geometry_msgs.msg import Point, Vector3, Pose, PoseArray, Quaternion
+from std_msgs.msg import ColorRGBA, Header
 from cv_bridge import CvBridge
 import numpy as np
 import random
+import tf_transformations
 from typing import Dict, List
+import traceback
 
 class Pose3DVisualizer(Node):
     KEYPOINT_CONNECTIONS = [
@@ -48,7 +50,8 @@ class Pose3DVisualizer(Node):
         )
         self.ts.registerCallback(self.sync_callback)
         
-        self.marker_pub = self.create_publisher(MarkerArray, '/human_pose_markers', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, '/yolo_human_track/markers', 10)
+        self.pose_pub = self.create_publisher(PoseArray, '/yolo_human_track/pose/pose3d', 10)
         self.bridge = CvBridge()
         self.depth_camera_matrix = None
         self.color_camera_matrix = None
@@ -60,18 +63,58 @@ class Pose3DVisualizer(Node):
         self.alignment_ready = False
 
     def initialize_camera_parameters(self, depth_info, color_info):
-        """カメラパラメータを初期化するメソッドを追加"""
+        """カメラパラメータを初期化"""
         self.depth_camera_matrix = np.array(depth_info.k).reshape(3, 3)
         self.color_camera_matrix = np.array(color_info.k).reshape(3, 3)
         self.depth_dist_coeffs = np.array(depth_info.d)
         self.color_dist_coeffs = np.array(color_info.d)
-        
         self.get_logger().info("カメラパラメータ初期化完了")
+
+    def _calculate_orientation(self, keypoints_3d):
+        """キーポイントから向きを計算"""
+        try:
+            # 肩と腰の中心点を計算
+            left_shoulder = np.array(keypoints_3d[5])
+            right_shoulder = np.array(keypoints_3d[6])
+            left_hip = np.array(keypoints_3d[11])
+            right_hip = np.array(keypoints_3d[12])
+            
+            shoulder_center = (left_shoulder + right_shoulder) / 2
+            hip_center = (left_hip + right_hip) / 2
+            
+            # 体の中心軸 (頭方向が+z)
+            body_axis = shoulder_center - hip_center
+            body_axis[2] = 0  # 水平面のみ考慮
+            body_axis = body_axis / np.linalg.norm(body_axis)
+            
+            # 前方ベクトル (体の向き)
+            forward_vec = np.array([body_axis[0], body_axis[1], 0])
+            
+            # 右方向ベクトル (x軸)
+            right_vec = np.cross(np.array([0, 0, 1]), forward_vec)
+            right_vec = right_vec / np.linalg.norm(right_vec)
+            
+            # 上方向ベクトル (z軸)
+            up_vec = np.array([0, 0, 1])
+            
+            # 回転行列を作成
+            rotation_matrix = np.column_stack([right_vec, forward_vec, up_vec])
+            
+            # クォータニオンに変換
+            quat = tf_transformations.quaternion_from_matrix(
+                np.vstack([np.column_stack([rotation_matrix, [0, 0, 0]]), [[0, 0, 0, 1]]])
+            )
+            
+            return Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+            
+        except Exception as e:
+            self.get_logger().warn(f"向き計算エラー: {str(e)}")
+            return Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
 
     def sync_callback(self, pose_msg, depth_msg, depth_info_msg, color_info_msg):
         try:
             if not self.alignment_ready:
-                self.initialize_camera_parameters(depth_info_msg, color_info_msg)  # メソッド名を修正
+                self.initialize_camera_parameters(depth_info_msg, color_info_msg)
                 self.alignment_ready = True
             
             depth_image = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='16UC1')
@@ -81,16 +124,22 @@ class Pose3DVisualizer(Node):
             
             marker_array = MarkerArray()
             current_marker_ids = set()
+            pose_array = PoseArray()
+            pose_array.header = pose_msg_header = pose_msg.header
             
+            # 古いマーカーを削除
             for marker_id in self.last_marker_ids:
                 marker = Marker()
-                marker.header = pose_msg.header
+                marker.header = pose_msg_header
                 marker.id = marker_id
                 marker.action = Marker.DELETE
                 marker_array.markers.append(marker)
             
             for pose in pose_msg.poses:
                 valid_points = []
+                keypoints_3d = []
+                
+                # キーポイントを3D座標に変換
                 for kp in pose.keypoints.keypoints:
                     if kp.x > 0 and kp.y > 0:
                         u_depth, v_depth = self._align_color_to_depth(
@@ -110,18 +159,70 @@ class Pose3DVisualizer(Node):
                             x = (u_depth - self.depth_camera_matrix[0, 2]) * depth / self.depth_camera_matrix[0, 0]
                             y = (v_depth - self.depth_camera_matrix[1, 2]) * depth / self.depth_camera_matrix[1, 1]
                             valid_points.append((x, y, depth))
+                            keypoints_3d.append(np.array([x, y, depth]))
                 
-                if len(valid_points) < 3:
+                if len(valid_points) < 5:  # 最低5つのキーポイントが必要
                     continue
                 
+                # 重心計算
                 center = np.mean(valid_points, axis=0)
                 color = self._get_person_color(pose.id)
                 
-                # 重心マーカー
+                # 姿勢情報を作成
+                person_pose = Pose()
+                person_pose.position.x = center[0]
+                person_pose.position.y = center[1]
+                person_pose.position.z = center[2]
+                
+                # 向きを計算
+                if len(keypoints_3d) >= 13:  # 必要なキーポイントがある場合
+                    try:
+                        # 肩と腰のキーポイントを取得
+                        left_shoulder = keypoints_3d[5]
+                        right_shoulder = keypoints_3d[6]
+                        left_hip = keypoints_3d[11]
+                        right_hip = keypoints_3d[12]
+                        
+                        # 体の向きを計算
+                        shoulder_center = (left_shoulder + right_shoulder) / 2
+                        hip_center = (left_hip + right_hip) / 2
+                        body_dir = shoulder_center - hip_center
+                        body_dir[2] = 0  # 水平成分のみ
+                        body_dir_norm = body_dir / np.linalg.norm(body_dir)
+                        
+                        # 前方ベクトル (y軸)
+                        forward_vec = body_dir_norm
+                        
+                        # 右方向ベクトル (x軸)
+                        right_vec = np.cross(np.array([0, 0, 1]), forward_vec)
+                        right_vec = right_vec / np.linalg.norm(right_vec)
+                        
+                        # 上方向ベクトル (z軸)
+                        up_vec = np.array([0, 0, 1])
+                        
+                        # 回転行列を作成
+                        rot_matrix = np.column_stack([right_vec, forward_vec, up_vec])
+                        
+                        # クォータニオンに変換
+                        quat = tf_transformations.quaternion_from_matrix(
+                            np.vstack([np.column_stack([rot_matrix, [0, 0, 0]]), [0, 0, 0, 1]]))
+                        
+                        person_pose.orientation = Quaternion(
+                            x=quat[0], y=quat[1], z=quat[2], w=quat[3])
+                        
+                    except Exception as e:
+                        self.get_logger().warn(f"向き計算エラー: {str(e)}")
+                        person_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+                else:
+                    person_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+                
+                pose_array.poses.append(person_pose)
+                
+                # マーカー作成 (重心)
                 self.marker_id += 1
                 current_marker_ids.add(self.marker_id)
                 marker = Marker()
-                marker.header = pose_msg.header
+                marker.header = pose_msg_header
                 marker.ns = f"person_{pose.id}"
                 marker.id = self.marker_id
                 marker.type = Marker.SPHERE
@@ -132,7 +233,22 @@ class Pose3DVisualizer(Node):
                 marker.color = ColorRGBA(r=color[0], g=color[1], b=color[2], a=1.0)
                 marker_array.markers.append(marker)
                 
-                # 骨格マーカー
+                # 向きを示す矢印マーカー
+                self.marker_id += 1
+                current_marker_ids.add(self.marker_id)
+                arrow_marker = Marker()
+                arrow_marker.header = pose_msg_header
+                arrow_marker.ns = f"direction_{pose.id}"
+                arrow_marker.id = self.marker_id
+                arrow_marker.type = Marker.ARROW
+                arrow_marker.action = Marker.ADD
+                arrow_marker.lifetime = rclpy.duration.Duration(seconds=marker_lifetime).to_msg()
+                arrow_marker.pose = person_pose  # 姿勢情報をそのまま使用
+                arrow_marker.scale = Vector3(x=0.2, y=0.05, z=0.05)  # サイズ調整
+                arrow_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=0.8)  # 黄色
+                marker_array.markers.append(arrow_marker)
+                
+                 # 骨格マーカー
                 if len(valid_points) >= 2:
                     self.marker_id += 1
                     current_marker_ids.add(self.marker_id)
@@ -199,9 +315,20 @@ class Pose3DVisualizer(Node):
             
             if marker_array.markers:
                 self.marker_pub.publish(marker_array)
+            
+            self.last_marker_ids = current_marker_ids
+            
+            # マーカーをパブリッシュ
+            if marker_array.markers:
+                self.marker_pub.publish(marker_array)
+            
+            # 姿勢情報をパブリッシュ
+            if len(pose_array.poses) > 0:
+                self.pose_pub.publish(pose_array)
                 
         except Exception as e:
             self.get_logger().error(f"処理エラー: {str(e)}", throttle_duration_sec=1)
+            traceback.print_exc()
 
     def _align_color_to_depth(self, u_color, v_color, color_matrix, depth_matrix):
         """RGB座標を深度画像座標に変換"""
