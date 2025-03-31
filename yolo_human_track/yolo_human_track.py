@@ -287,7 +287,7 @@ class PoseEstimate(Node):
     def bringup_model(self):
         self.get_logger().info("""
 LOAD MODEL : %s
-MINIMUM_CONF : %d                               
+MINIMUM_CONF : %f                               
         """%(self.yolo_model, self.detect_conf))
 
         return YOLO(self.yolo_model) 
