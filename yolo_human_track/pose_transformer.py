@@ -7,8 +7,9 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from human_pose_msgs.msg import Pose2DArray
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, Vector3, Pose, PoseArray, Quaternion
+from geometry_msgs.msg import Point, Vector3, Pose, PoseArray, Quaternion, PoseStamped
 from std_msgs.msg import ColorRGBA
+from yolo_world_interfaces.msg import PoseStampedArray
 
 from cv_bridge import CvBridge
 import numpy as np
@@ -55,7 +56,8 @@ class Pose3DVisualizer(Node):
         self.ts.registerCallback(self.sync_callback)
         
         self.marker_pub = self.create_publisher(MarkerArray, '/yolo_human_track/markers', 10)
-        self.pose_pub = self.create_publisher(PoseArray, '/yolo_human_track/pose/pose3d', 10)
+        self.pose_stamped_array_pub = self.create_publisher(PoseStampedArray, '/yolo_human_track/pose/poses_3d', 10)
+        
         self.bridge = CvBridge()
         self.depth_camera_matrix = None
         self.color_camera_matrix = None
@@ -128,16 +130,11 @@ class Pose3DVisualizer(Node):
             
             marker_array = MarkerArray()
             current_marker_ids = set()
-            pose_array = PoseArray()
-            pose_array.header = pose_msg_header = pose_msg.header
             
-            # 古いマーカーを削除
-            for marker_id in self.last_marker_ids:
-                marker = Marker()
-                marker.header = pose_msg_header
-                marker.id = marker_id
-                marker.action = Marker.DELETE
-                marker_array.markers.append(marker)
+            # PoseStampedArrayを作成
+            pose_stamped_array = PoseStampedArray()
+            pose_stamped_array.header = depth_msg.header  # カメラフレームを使用
+            pose_stamped_array.header.frame_id = depth_msg.header.frame_id  # カメラフレームIDを設定
             
             for pose in pose_msg.poses:
                 valid_points = []
@@ -220,13 +217,19 @@ class Pose3DVisualizer(Node):
                 else:
                     person_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
                 
-                pose_array.poses.append(person_pose)
+                # PoseStampedを作成して配列に追加
+                pose_stamped = PoseStamped()
+                pose_stamped.header.stamp = depth_msg.header.stamp  # タイムスタンプは同期
+                pose_stamped.header.frame_id = f"person_{pose.id}"  # 人物IDをframe_idとして設定
+                pose_stamped.pose = person_pose
+                
+                pose_stamped_array.posestampedarray.append(pose_stamped)
                 
                 # マーカー作成 (重心)
                 self.marker_id += 1
                 current_marker_ids.add(self.marker_id)
                 marker = Marker()
-                marker.header = pose_msg_header
+                marker.header = pose_msg.header
                 marker.ns = f"person_{pose.id}"
                 marker.id = self.marker_id
                 marker.type = Marker.SPHERE
@@ -241,7 +244,7 @@ class Pose3DVisualizer(Node):
                 self.marker_id += 1
                 current_marker_ids.add(self.marker_id)
                 arrow_marker = Marker()
-                arrow_marker.header = pose_msg_header
+                arrow_marker.header = pose_msg.header
                 arrow_marker.ns = f"direction_{pose.id}"
                 arrow_marker.id = self.marker_id
                 arrow_marker.type = Marker.ARROW
@@ -252,7 +255,7 @@ class Pose3DVisualizer(Node):
                 arrow_marker.color = ColorRGBA(r=1.0, g=1.0, b=0.0, a=0.8)  # 黄色
                 marker_array.markers.append(arrow_marker)
                 
-                 # 骨格マーカー
+                # 骨格マーカー
                 if len(valid_points) >= 2:
                     self.marker_id += 1
                     current_marker_ids.add(self.marker_id)
@@ -317,18 +320,13 @@ class Pose3DVisualizer(Node):
             
             self.last_marker_ids = current_marker_ids
             
-            if marker_array.markers:
-                self.marker_pub.publish(marker_array)
-            
-            self.last_marker_ids = current_marker_ids
-            
             # マーカーをパブリッシュ
             if marker_array.markers:
                 self.marker_pub.publish(marker_array)
             
-            # 姿勢情報をパブリッシュ
-            if len(pose_array.poses) > 0:
-                self.pose_pub.publish(pose_array)
+            # PoseStampedArrayをパブリッシュ
+            if len(pose_stamped_array.posestampedarray) > 0:
+                self.pose_stamped_array_pub.publish(pose_stamped_array)
                 
         except Exception as e:
             self.get_logger().error(f"処理エラー: {str(e)}", throttle_duration_sec=1)
