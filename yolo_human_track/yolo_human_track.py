@@ -226,7 +226,6 @@ class PoseEstimate(Node):
         return res
 
     def rgb_callback(self, msg):
-        self.get_logger().info('processing')
         if not self.execute or self.model is None:
             return
 
