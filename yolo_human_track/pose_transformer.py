@@ -4,12 +4,11 @@ from rclpy.node import Node
 import rclpy
 
 from message_filters import ApproximateTimeSynchronizer, Subscriber
-from human_pose_msgs.msg import Pose2DArray
+from human_pose_msgs.msg import Pose2DArray, PoseStampedArray
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point, Vector3, Pose, PoseArray, Quaternion, PoseStamped
 from std_msgs.msg import ColorRGBA
-from yolo_world_interfaces.msg import PoseStampedArray
 
 from cv_bridge import CvBridge
 import numpy as np
@@ -36,17 +35,35 @@ class Pose3DVisualizer(Node):
         self.declare_parameter('depth_scale', 0.001)
         self.declare_parameter('marker_lifetime', 0.05)
         self.declare_parameter('depth_sample_size', 5)
+        self.declare_parameter('qos.reliability', 'RELIABLE')
+        self.declare_parameter('qos.durability', 'VOLATILE')
+        self.declare_parameter('qos.depth', 10)
+
+        qos_reliability_str = self.get_parameter('qos.reliability').value.upper()
+        qos_durability_str = self.get_parameter('qos.durability').value.upper()
+        qos_depth = self.get_parameter('qos.depth').value
+
+        # QoSポリシーの文字列を対応するEnumに変換
+        reliability_policy = {
+            'RELIABLE': QoSReliabilityPolicy.RELIABLE,
+            'BEST_EFFORT': QoSReliabilityPolicy.BEST_EFFORT
+        }.get(qos_reliability_str, QoSReliabilityPolicy.RELIABLE)
+
+        durability_policy = {
+            'VOLATILE': QoSDurabilityPolicy.VOLATILE,
+            'TRANSIENT_LOCAL': QoSDurabilityPolicy.TRANSIENT_LOCAL
+        }.get(qos_durability_str, QoSDurabilityPolicy.VOLATILE)
 
         qos_profile = QoSProfile(
-            reliability=QoSReliabilityPolicy.BEST_EFFORT,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10
+            reliability=reliability_policy,
+            durability=durability_policy,
+            depth=qos_depth
         )
         
-        pose_sub = Subscriber(self, Pose2DArray, '/yolo_human_track/pose/poses_2d')
-        depth_sub = Subscriber(self, Image, 'depth_image_raw')
-        depth_info_sub = Subscriber(self, CameraInfo, 'depth_camerainfo')
-        color_info_sub = Subscriber(self, CameraInfo, 'color_camerainfo')
+        pose_sub = Subscriber(self, Pose2DArray, '/yolo_human_track/poses_2d', qos_profile=qos_profile)
+        depth_sub = Subscriber(self, Image, 'depth_image_raw', qos_profile=qos_profile)
+        depth_info_sub = Subscriber(self, CameraInfo, 'depth_camerainfo', qos_profile=qos_profile)
+        color_info_sub = Subscriber(self, CameraInfo, 'color_camerainfo', qos_profile=qos_profile)
         
         self.ts = ApproximateTimeSynchronizer(
             [pose_sub, depth_sub, depth_info_sub, color_info_sub],
@@ -55,8 +72,8 @@ class Pose3DVisualizer(Node):
         )
         self.ts.registerCallback(self.sync_callback)
         
-        self.marker_pub = self.create_publisher(MarkerArray, '/yolo_human_track/markers', 10)
-        self.pose_stamped_array_pub = self.create_publisher(PoseStampedArray, '/yolo_human_track/pose/poses_3d', 10)
+        self.marker_pub = self.create_publisher(MarkerArray, '/yolo_human_track/poses_markers', 10)
+        self.pose_stamped_array_pub = self.create_publisher(PoseStampedArray, '/yolo_human_track/poses_3d', 10)
         
         self.bridge = CvBridge()
         self.depth_camera_matrix = None

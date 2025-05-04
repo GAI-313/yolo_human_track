@@ -154,6 +154,9 @@ class PoseEstimate(Node):
         self.declare_parameter('track_thresh', 0.5)
         self.declare_parameter('match_thresh', 0.8)
         self.declare_parameter('track_buffer', 30)
+        self.declare_parameter('qos.reliability', 'RELIABLE')
+        self.declare_parameter('qos.durability', 'VOLATILE')
+        self.declare_parameter('qos.depth', 10)
 
         self.execute = self.get_parameter('auto_bringup').value
         self.detect_conf = self.get_parameter('detect_conf').value
@@ -162,6 +165,9 @@ class PoseEstimate(Node):
         track_thresh = self.get_parameter('track_thresh').value
         match_thresh = self.get_parameter('match_thresh').value
         track_buffer = self.get_parameter('track_buffer').value
+        qos_reliability_str = self.get_parameter('qos.reliability').value.upper()
+        qos_durability_str = self.get_parameter('qos.durability').value.upper()
+        qos_depth = self.get_parameter('qos.depth').value
 
         self.model = None
         if self.execute:
@@ -174,21 +180,32 @@ class PoseEstimate(Node):
         )
         self.bridge = CvBridge()
         
+        # QoSポリシーの文字列を対応するEnumに変換
+        reliability_policy = {
+            'RELIABLE': QoSReliabilityPolicy.RELIABLE,
+            'BEST_EFFORT': QoSReliabilityPolicy.BEST_EFFORT
+        }.get(qos_reliability_str, QoSReliabilityPolicy.RELIABLE)
+
+        durability_policy = {
+            'VOLATILE': QoSDurabilityPolicy.VOLATILE,
+            'TRANSIENT_LOCAL': QoSDurabilityPolicy.TRANSIENT_LOCAL
+        }.get(qos_durability_str, QoSDurabilityPolicy.VOLATILE)
+
         qos_profile = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10
+            reliability=reliability_policy,
+            durability=durability_policy,
+            depth=qos_depth
         )
         
         self.pose_pub = self.create_publisher(
             Pose2DArray,
-            'yolo_human_track/pose/poses_2d',
+            'yolo_human_track/poses_2d',
             10
         )
         
         self.rgb_sub = self.create_subscription(
             Image,
-            '/arm_camera/color/image_raw',
+            '/color_image_raw',
             self.rgb_callback,
             qos_profile=qos_profile
         )
